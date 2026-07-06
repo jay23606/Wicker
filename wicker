@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Thin launcher for Wicker, the Canasta wiki application builder. Prefers
+# the repo's .venv if present so jsonschema/PyYAML are available.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -x "$here/.venv/bin/python" ]]; then
+	exec "$here/.venv/bin/python" "$here/wicker.py" "$@"
+fi
+exec python3 "$here/wicker.py" "$@"

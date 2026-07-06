@@ -1,0 +1,784 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/cicalese/Wicker/schema/wicker-app.v1.schema.json",
+  "title": "Wicker application manifest (wicker-app/v1)",
+  "description": "A packaged Canasta wiki application: extensions, skins, per-service image overlays, sidecars, settings, starter content, and post-install maintenance, deployed by Wicker.",
+  "type": "object",
+  "required": [
+    "apiVersion",
+    "name",
+    "version",
+    "description",
+    "wikis"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "const": "wicker-app/v1"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+      "description": "App identifier. Kebab-case."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+].+)?$"
+    },
+    "description": {
+      "type": "string"
+    },
+    "author": {
+      "type": "string"
+    },
+    "homepage": {
+      "type": "string"
+    },
+    "license": {
+      "type": "string"
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "canasta": {
+          "type": "string",
+          "description": "Canasta version constraint, e.g. \">=3.5\"."
+        }
+      }
+    },
+    "wikis": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The wikis in this instance (required, at least one). The first entry is the primary wiki: its id names the instance and it is created at the domain root. List more entries to build a wiki farm; each is added to the farm. Domains are supplied at deploy time via `-n/--domain-name` (one per wiki, matching this list's order and count), not declared here. Ordering matters — the first wiki is where `content.uploads` top-level files land.",
+      "items": {
+        "$ref": "#/$defs/wiki"
+      }
+    },
+    "publicAssets": {
+      "type": "string",
+      "description": "Directory (relative to the manifest) whose contents are copied into the instance's public_assets/, served as static files (logos, favicons, robots.txt, …). The tree is copied verbatim, so per-wiki assets go under a public_assets/<wiki>/ subdirectory. Compose-only for now."
+    },
+    "extensions": {
+      "type": "array",
+      "description": "Every extension the app uses, bundled and custom together. An entry with no `source`/`git` is a Canasta-bundled extension (the app's settings fragment is expected to load it). An entry with `source` (local path) or `git` (URL) is a custom extension Wicker installs into the instance.",
+      "items": {
+        "$ref": "#/$defs/component"
+      }
+    },
+    "skins": {
+      "type": "array",
+      "description": "Every skin the app uses, bundled and custom together. An entry with no `source`/`git` is a Canasta-bundled skin (the app's settings fragment is expected to load it). An entry with `source` (local path) or `git` (URL) is a custom skin Wicker installs into the instance.",
+      "items": {
+        "$ref": "#/$defs/component"
+      }
+    },
+    "images": {
+      "type": "object",
+      "description": "Per-service derived images for the services Canasta can point at a custom image: web and elasticsearch. Each value is a Dockerfile that derives a custom image for that service from the stock image — e.g. OS packages or php.ini settings for web, an analysis plugin or alternate collation for elasticsearch. Additional containers belong in sidecars.",
+      "properties": {
+        "web": {
+          "$ref": "#/$defs/image"
+        },
+        "elasticsearch": {
+          "$ref": "#/$defs/image"
+        }
+      },
+      "additionalProperties": false
+    },
+    "env": {
+      "type": "object",
+      "description": "Plain configuration values written to the instance .env. The web pod's environment is a curated allowlist on both orchestrators, so these do NOT reach MediaWiki via getenv() — Wicker bridges declared secrets to the web tier separately; use settings fragments for app config.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "secrets": {
+      "type": "array",
+      "description": "Secrets the app needs at deploy time. Each is declared here (name + where the value goes); the VALUE is supplied via `wicker deploy --secret KEY=VALUE` (or the deploy environment), delivered per target (Compose: instance .env; Kubernetes: the per-instance Secret), and never stored in the manifest. A `sidecar:<name>` target delivers the value to that sidecar and withholds it from the web tier (envPrivate); `web` re-exports it to the MediaWiki getenv(); `env` keeps it in the .env only.",
+      "items": {
+        "$ref": "#/$defs/secret"
+      }
+    },
+    "sidecars": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sidecar"
+      }
+    },
+    "settings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/settingsFile"
+      }
+    },
+    "content": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pages": {
+          "$ref": "#/$defs/pages"
+        },
+        "uploads": {
+          "$ref": "#/$defs/uploads"
+        },
+        "postInstall": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/action"
+          }
+        }
+      }
+    },
+    "migrations": {
+      "type": "array",
+      "description": "Versioned upgrade migrations for USER content (pages the app did not ship; shipped pages are reconciled separately). `wicker upgrade` runs every entry with installed-version < to <= manifest version, in ascending `to` order — cumulative, so 1.0->3.0 runs the 2.0 steps then the 3.0 steps.",
+      "items": {
+        "$ref": "#/$defs/migration"
+      }
+    }
+  },
+  "$defs": {
+    "secretTarget": {
+      "type": "string",
+      "pattern": "^(web|env|sidecar:[a-z0-9]([a-z0-9-]*[a-z0-9])?)$",
+      "description": "Where a secret value is delivered: 'web', 'env', or 'sidecar:<name>'."
+    },
+    "secret": {
+      "type": "object",
+      "required": [
+        "name",
+        "target"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "Env-var-style key. The value is supplied at deploy time, not here."
+        },
+        "description": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true (default), deploy fails fast if no value is provided."
+        },
+        "target": {
+          "description": "Where the value goes. Scalar or list of: 'web' (MediaWiki getenv()), 'env' (instance .env only), 'sidecar:<name>' (referenced by that sidecar, withheld from the web tier).",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/secretTarget"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/secretTarget"
+              },
+              "minItems": 1
+            }
+          ]
+        }
+      }
+    },
+    "component": {
+      "type": "object",
+      "description": "A MediaWiki extension or skin. Name-only is a Canasta-bundled component the settings fragment loads; `source` (local path) or `git` (URL) is a custom component Wicker installs into the instance.",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string",
+          "description": "Local path (relative to the manifest) to a custom extension/skin; copied into the instance."
+        },
+        "git": {
+          "type": "string",
+          "description": "Git URL for a custom extension/skin; cloned into the instance."
+        },
+        "ref": {
+          "type": "string",
+          "description": "Git branch, tag, or commit to check out (git sources). A branch or tag is cloned shallow; a commit SHA is checked out after a clone (full by default, bounded by `depth` if set)."
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Optional shallow-clone depth (git sources; default 1 for a branch/tag `ref`). For a commit `ref`, bounds the fallback clone — the commit must be within `depth` of the default branch tip."
+        },
+        "optional": {
+          "type": "boolean",
+          "default": false,
+          "description": "The app works without this component but degrades. Documentation only."
+        }
+      },
+      "not": {
+        "required": [
+          "source",
+          "git"
+        ]
+      }
+    },
+    "image": {
+      "type": "object",
+      "required": [
+        "dockerfile"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "dockerfile": {
+          "type": "string",
+          "description": "Dockerfile path relative to the manifest. It should `FROM` the stock Canasta image for this service."
+        },
+        "context": {
+          "type": "string",
+          "description": "Build context (default: the dockerfile's directory)."
+        },
+        "tag": {
+          "type": "string",
+          "description": "Image tag (default derived from app name + service + version)."
+        },
+        "baseImage": {
+          "type": "string",
+          "description": "Override the base this image derives from, forwarded as --build-arg BASE_IMAGE=... (the Dockerfile must use ARG BASE_IMAGE). For the web service, the --base-image CLI flag takes precedence. Use to build against a custom/unreleased Canasta image."
+        }
+      }
+    },
+    "sidecar": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "build": {
+          "type": "string",
+          "description": "Docker build context, relative to the manifest."
+        },
+        "dockerfile": {
+          "type": "string",
+          "description": "Ignored: canasta builds <build>/Dockerfile. Present for forward compatibility only."
+        },
+        "image": {
+          "type": "string",
+          "description": "Image reference for a pull-based sidecar. Ignored when `build` is present — canasta builds and tags the context itself."
+        },
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Override the container's entrypoint command."
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "envPrivate": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Env keys delivered to this sidecar but withheld from the web-tier getenv() bridge (for a secret only the sidecar should hold). Each must be a key in `env`. Usually set for you when a `secrets` entry targets this sidecar."
+        },
+        "envSecret": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Env keys sourced from the per-instance k8s app Secret (rendered as secretKeyRef instead of a cleartext value); the Compose renderer ignores this. Usually set for you on a k8s deploy when a `secrets` entry targets this sidecar."
+        },
+        "secrets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Not in the canasta sidecar primitive's v1 scope — warned and dropped at deploy. Declare app secrets in the top-level `secrets:` section instead."
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Names of sidecar services this one starts after (start ordering on Compose; carried but not enforced on k8s — use a healthcheck for readiness)."
+        },
+        "files": {
+          "type": "array",
+          "description": "Small config files mounted into the sidecar. `source` is a path relative to the manifest; Wicker stages it into the instance and Canasta mounts it at `mountPath` (a bind mount on Compose, a ConfigMap on k8s).",
+          "items": {
+            "type": "object",
+            "required": [
+              "source",
+              "mountPath"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "source": {
+                "type": "string",
+                "description": "File path relative to the manifest."
+              },
+              "mountPath": {
+                "type": "string"
+              },
+              "readOnly": {
+                "type": "boolean",
+                "default": true
+              }
+            }
+          }
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Container ports exposed on the instance network (reachable by service name, e.g. redis:6379). Internal only — not published to the host."
+        },
+        "volumes": {
+          "type": "array",
+          "description": "Mounted volumes. `persistent: true` -> a named volume (Compose) / ReadWriteOnce PVC (k8s); otherwise ephemeral.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "mountPath"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "mountPath": {
+                "type": "string"
+              },
+              "persistent": {
+                "type": "boolean",
+                "default": false
+              },
+              "size": {
+                "type": "string",
+                "default": "1Gi",
+                "description": "PVC size when persistent (k8s)."
+              }
+            }
+          }
+        },
+        "sysctls": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Kernel sysctls the container needs (e.g. vm.max_map_count for Elasticsearch). Not in the canasta sidecar primitive's v1 scope — warned and dropped at deploy."
+        },
+        "healthcheck": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "One of: `command` (exec), `tcp` (port check), or `path`+`port` (HTTP GET). `port` alone is a TCP check.",
+          "properties": {
+            "command": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tcp": {
+              "type": "integer"
+            },
+            "path": {
+              "type": "string"
+            },
+            "port": {
+              "type": "integer"
+            }
+          }
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "memory": {
+              "type": "string"
+            },
+            "cpu": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "build"
+          ]
+        },
+        {
+          "required": [
+            "image"
+          ]
+        }
+      ]
+    },
+    "settingsFile": {
+      "type": "object",
+      "required": [
+        "path",
+        "install"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Source path relative to the manifest."
+        },
+        "install": {
+          "type": "string",
+          "description": "Destination relative to the instance directory, e.g. config/settings/global/Settings.php."
+        },
+        "vars": {
+          "type": "object",
+          "description": "When present, the file is treated as a template and these {{KEY}} placeholders are substituted (values may reference deploy-time --var). When absent, the file is copied verbatim.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "wiki": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false,
+      "description": "One wiki in the instance. The first wiki in `wikis` is the primary (created with the instance at the domain root); the rest build a wiki farm. Domains are NOT declared here — they are supplied at deploy time via `-n/--domain-name` (one per wiki, in this order), since a shipped manifest has no reasonable default domain.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9-_]*[a-zA-Z0-9])?$",
+          "description": "Wiki short name (the --wiki id)."
+        },
+        "siteName": {
+          "type": "string",
+          "description": "Display name ($wgSitename). Optional."
+        }
+      }
+    },
+    "uploads": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Media files uploaded into the wikis at deploy time via importImages.php. Files directly in `dir` are uploaded to the first wiki; files in a `dir/<wiki-id>/` subdirectory are uploaded to that wiki. Compose-only for now.",
+      "properties": {
+        "dir": {
+          "type": "string",
+          "description": "Directory holding the media files, relative to the manifest (default ./content/uploads)."
+        }
+      }
+    },
+    "pages": {
+      "type": "object",
+      "required": [
+        "list"
+      ],
+      "additionalProperties": false,
+      "description": "Starter wiki pages imported directly from local files. Each page's file path is derived from its title, mirroring the wiki namespace as a directory: the namespace ':' becomes a '/' (so 'Template:Expense' is 'Template/Expense.mediawiki'), spaces and subpage '/' are kept, and a main-namespace page sits at the root; '.mediawiki' is appended unless the title ends in .css/.js. Override per page with `file`.",
+      "properties": {
+        "dir": {
+          "type": "string",
+          "description": "Directory holding the page files, relative to the manifest."
+        },
+        "list": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Full page title, e.g. \"Template:Expense\" or \"Main Page\"; filename derived."
+              },
+              {
+                "type": "object",
+                "required": [
+                  "page"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "page": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "type": "string",
+                    "description": "Explicit file (relative to `dir`, or to the manifest if no `dir`), overriding the derived name."
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "migration": {
+      "type": "object",
+      "required": [
+        "to",
+        "steps"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "to": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+].+)?$",
+          "description": "The app version these steps migrate TO. Must be unique across entries and not exceed the manifest version."
+        },
+        "description": {
+          "type": "string"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/action"
+              },
+              {
+                "$ref": "#/$defs/templateCallsStep"
+              }
+            ]
+          }
+        }
+      },
+      "description": "template-calls steps are idempotent; action steps (maintenance/shell/page-edit) re-run wholesale if an upgrade is retried after a failure — write them to be safe to repeat."
+    },
+    "templateCallsStep": {
+      "type": "object",
+      "required": [
+        "kind",
+        "template",
+        "transforms"
+      ],
+      "additionalProperties": false,
+      "description": "Rewrite every call of a template across the wiki's user pages (shipped pages are excluded — reconciliation already delivered their new text). Calls via the template's Template-namespace redirects are matched too. Deterministic, parser-based (mwparserfromhell); pages whose wikitext cannot be safely rewritten are reported, never guessed.",
+      "properties": {
+        "kind": {
+          "const": "template-calls"
+        },
+        "template": {
+          "type": "string",
+          "description": "Template name, without the Template: prefix."
+        },
+        "transforms": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/templateTransform"
+          }
+        }
+      }
+    },
+    "templateTransform": {
+      "description": "One deterministic edit to a template call's NAMED parameters, applied to every matched invocation.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "from",
+            "to"
+          ],
+          "additionalProperties": false,
+          "description": "Rename a parameter, value untouched. A call already using the new name (or lacking the old one) is left alone.",
+          "properties": {
+            "op": {
+              "const": "rename-param"
+            },
+            "from": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "name"
+          ],
+          "additionalProperties": false,
+          "description": "Add a parameter with a literal `value`, or copy it `from` another parameter (skipped if the source is absent). With ifAbsent (default true) an existing value is never clobbered.",
+          "properties": {
+            "op": {
+              "const": "add-param"
+            },
+            "name": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string"
+            },
+            "ifAbsent": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "required": [
+                "from"
+              ]
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "name"
+          ],
+          "additionalProperties": false,
+          "description": "Remove a parameter AND ITS VALUE — an explicit data-loss decision.",
+          "properties": {
+            "op": {
+              "const": "remove-param"
+            },
+            "name": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "name",
+            "map"
+          ],
+          "additionalProperties": false,
+          "description": "Rewrite a parameter's value by exact (whitespace-trimmed) lookup. Values not in the map are kept; with unmapped: report (default) they are also listed in the upgrade report for a human.",
+          "properties": {
+            "op": {
+              "const": "map-values"
+            },
+            "name": {
+              "type": "string"
+            },
+            "map": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "unmapped": {
+              "enum": [
+                "keep",
+                "report"
+              ],
+              "default": "report"
+            }
+          }
+        }
+      ]
+    },
+    "action": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "description": "A named post-install / lifecycle action. Deliberately generic — no app-domain knowledge.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Run a maintenance script. With `extension`, the script is resolved under that extension's maintenance/ dir; without, under core maintenance/.",
+          "properties": {
+            "kind": {
+              "const": "maintenance"
+            },
+            "extension": {
+              "type": "string"
+            },
+            "script": {
+              "type": "string"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "script"
+          ]
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "update"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "page-edit"
+            },
+            "page": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string",
+              "description": "Path to wikitext (relative to the manifest) or literal content."
+            }
+          },
+          "required": [
+            "kind",
+            "page",
+            "source"
+          ]
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "shell"
+            },
+            "command": {
+              "type": "string"
+            },
+            "container": {
+              "type": "string",
+              "description": "web | sidecar:<name> | host",
+              "default": "web"
+            }
+          },
+          "required": [
+            "kind",
+            "command"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,4 @@
+PyYAML>=6.0
+jsonschema>=4.0
+merge3>=0.0.8
+mwparserfromhell>=0.6
