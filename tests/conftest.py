@@ -69,3 +69,18 @@ def _isolated_canasta_registry(tmp_path_factory, monkeypatch):
     reads the host's real canasta registry."""
     monkeypatch.setenv(
         "CANASTA_CONFIG_DIR", str(tmp_path_factory.mktemp("canasta-config")))
+
+
+@pytest.fixture(autouse=True)
+def _preflight_tools_on_path(tmp_path_factory, monkeypatch):
+    """Preflight requires docker/canasta/git on PATH; dry-run tests never
+    execute them. Stub any that are absent (e.g. canasta on CI runners)."""
+    missing = [t for t in ("docker", "canasta", "git") if not wicker.have(t)]
+    if not missing:
+        return
+    stub_dir = tmp_path_factory.mktemp("stub-bin")
+    for tool in missing:
+        stub = stub_dir / tool
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{stub_dir}{os.pathsep}{os.environ['PATH']}")
