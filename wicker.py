@@ -747,6 +747,18 @@ class Deploy:
                 cmd += ["-t", w["siteName"]]
             run(cmd, dry_run=self.dry_run)
 
+    def _build_from_root(self) -> Path:
+        """Durable home for the web overlay's `--build-from` source tree.
+
+        Canasta records the --build-from path in its registry and rebuilds
+        from it on every later `canasta upgrade`, so this tree must outlive
+        the deploy that stages it — it is not staging scratch, and must not
+        be routed through _staging_tmpdir. It cannot live in the instance
+        dir either: `canasta create` refuses a non-empty target."""
+        state_home = os.environ.get("XDG_STATE_HOME") \
+            or str(Path.home() / ".local" / "state")
+        return Path(state_home) / "wicker" / "build-from" / self.id
+
     def _stage_web_build_from(self, spec: dict) -> Path:
         """Stage the web image's build context as a `canasta create
         --build-from` source tree and return its path. `--build-from` builds
@@ -756,11 +768,14 @@ class Deploy:
         dockerfile = self.rel(spec["dockerfile"])
         context = self.rel(spec["context"]) if spec.get("context") \
             else dockerfile.parent
-        root = self._staging_tmpdir("wicker-buildfrom-")
+        root = self._build_from_root()
         staged = root / "Canasta"
         info(f"Staging web build context for --build-from: {context} -> {staged}")
         if self.dry_run:
             return root
+        if staged.exists():
+            shutil.rmtree(staged)
+        staged.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(context, staged)
         shutil.copy2(dockerfile, staged / "Dockerfile")
         return root
@@ -1935,6 +1950,13 @@ class Upgrade(Deploy):
             web = (self.m.get("images", {}) or {}).get("web")
             if web:
                 tag = self._push_image_k8s("web", web)
+                # `canasta upgrade` rebuilds the web image from the tree
+                # deploy recorded as --build-from. Re-stage it so that
+                # rebuild reproduces this app version rather than the one
+                # first deployed. Only for instances that have such a tree;
+                # never mint one the canasta registry does not point at.
+                if self._build_from_root().is_dir():
+                    self._stage_web_build_from(web)
             elif self.base_image:
                 # No web overlay: run the custom image directly. Same rule
                 # as deploy — the cluster must be able to pull it.

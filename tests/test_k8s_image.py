@@ -63,16 +63,37 @@ class TestStageWebBuildFrom:
         assert (root / "Canasta" / "Dockerfile").is_file()
         assert (root / "Canasta" / "extra.ini").is_file()
 
-    def test_staged_tree_registered_and_removed_by_cleanup(self, tmp_path):
+    def test_staged_tree_survives_staging_cleanup(self, tmp_path):
+        # Canasta records this path and rebuilds from it on every later
+        # `canasta upgrade`, so it must not be swept up as staging scratch.
         (tmp_path / "Dockerfile").write_text("FROM scratch\n")
         d = _deploy(tmp_path, "k8s", {"web": {"dockerfile": "./Dockerfile"}},
                     dry_run=False)
         root = d._stage_web_build_from({"dockerfile": "./Dockerfile"})
-        assert root in d._staging_dirs
-        assert (root / "Canasta" / "Dockerfile").is_file()
+        assert root not in getattr(d, "_staging_dirs", [])
         d._cleanup_staging()
-        assert not root.exists()
-        assert d._staging_dirs == []
+        assert (root / "Canasta" / "Dockerfile").is_file()
+
+    def test_staged_tree_is_outside_the_instance_dir(self, tmp_path):
+        # `canasta create` refuses a non-empty target directory.
+        (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+        d = _deploy(tmp_path, "k8s", {"web": {"dockerfile": "./Dockerfile"}},
+                    dry_run=False)
+        root = d._stage_web_build_from({"dockerfile": "./Dockerfile"})
+        assert d.instance_dir not in root.parents
+        assert root != d.instance_dir
+
+    def test_restaging_replaces_the_previous_tree(self, tmp_path):
+        (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+        (tmp_path / "gone.ini").write_text("x=1\n")
+        d = _deploy(tmp_path, "k8s", {"web": {"dockerfile": "./Dockerfile"}},
+                    dry_run=False)
+        root = d._stage_web_build_from({"dockerfile": "./Dockerfile"})
+        assert (root / "Canasta" / "gone.ini").is_file()
+        (tmp_path / "gone.ini").unlink()
+        root = d._stage_web_build_from({"dockerfile": "./Dockerfile"})
+        assert (root / "Canasta" / "Dockerfile").is_file()
+        assert not (root / "Canasta" / "gone.ini").exists()
 
 
 class TestDerivedTag:
@@ -330,3 +351,26 @@ class TestIsRegistryQualified:
     def test_localhost_ref_is_qualified(self):
         import wicker
         assert wicker.is_registry_qualified("localhost:5000/canasta:local")
+
+
+class TestUpgradeRestagesBuildFrom:
+    """The canasta registry keeps pointing at the tree deploy staged, and
+    `canasta upgrade` rebuilds the web image from it. Upgrade must refresh
+    it, or that rebuild resurrects the app version first deployed."""
+
+    def _upgrade(self, tmp_path):
+        m = minimal_manifest(images={"web": {"dockerfile": "./Dockerfile"}})
+        return make_upgrade(tmp_path, m, id="app", orchestrator="k8s")
+
+    def test_restages_when_a_build_from_tree_exists(self, tmp_path, capsys):
+        u = self._upgrade(tmp_path)
+        (u._build_from_root() / "Canasta").mkdir(parents=True)
+        u.apply_images({})
+        assert "Staging web build context for --build-from" in capsys.readouterr().out
+
+    def test_no_tree_is_left_alone(self, tmp_path, capsys):
+        u = self._upgrade(tmp_path)
+        assert not u._build_from_root().exists()
+        u.apply_images({})
+        assert "Staging web build context for --build-from" not in capsys.readouterr().out
+        assert not u._build_from_root().exists()

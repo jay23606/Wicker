@@ -72,6 +72,15 @@ def _isolated_canasta_registry(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_wicker_state(tmp_path_factory, monkeypatch):
+    """Point $XDG_STATE_HOME at an empty per-test dir so the durable
+    --build-from staging never writes into the developer's real
+    ~/.local/state."""
+    monkeypatch.setenv(
+        "XDG_STATE_HOME", str(tmp_path_factory.mktemp("xdg-state")))
+
+
+@pytest.fixture(autouse=True)
 def _preflight_tools_on_path(tmp_path_factory, monkeypatch):
     """Preflight requires docker/canasta/git on PATH; dry-run tests never
     execute them. Stub any that are absent (e.g. canasta on CI runners)."""
