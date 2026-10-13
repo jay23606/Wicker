@@ -66,6 +66,8 @@ MW_RUN = f"php {MW_ROOT}/maintenance/run.php"
 # is built via `canasta create --build-from` and no base is otherwise given —
 # without it the CLI falls back to canasta-base (no bundled extensions), which
 # yields a wiki that fatals on the first wfLoadExtension of a bundled ext.
+# Fallback only: default_canasta_image() pins the Canasta version the installed
+# CLI targets, and uses this :latest tag when that version cannot be read.
 DEFAULT_CANASTA_IMAGE = "ghcr.io/canastawiki/canasta:latest"
 
 # Canasta exposes image overrides for exactly two services: web
@@ -658,7 +660,7 @@ class Deploy:
         cmd = ["canasta", "image", "push", str(context), "--name", tag]
         base = self._base_image_for(service, spec)
         if service == "web":
-            base = base or DEFAULT_CANASTA_IMAGE
+            base = base or default_canasta_image()
         if base:
             cmd += ["--build-arg", f"BASE_IMAGE={base}"]
         info(f"Delivering the derived {service} image to k8s via "
@@ -693,8 +695,8 @@ class Deploy:
                 # --build-from the CLI otherwise defaults BASE_IMAGE to
                 # canasta-base (no bundled extensions), so always pass an
                 # explicit base: the resolved one (CLI --base-image or manifest
-                # baseImage), else the latest published Canasta image.
-                base = self._base_image_for("web", web) or DEFAULT_CANASTA_IMAGE
+                # baseImage), else the Canasta image for the targeted version.
+                base = self._base_image_for("web", web) or default_canasta_image()
                 cmd += ["--build-arg", f"BASE_IMAGE={base}"]
             elif self.base_image:
                 # No web overlay: run the custom image directly. The cluster
@@ -1497,6 +1499,35 @@ def normalize_template_name(name) -> str:
     return s
 
 
+def target_canasta_version() -> str | None:
+    """The Canasta version the installed canasta CLI targets, read from the
+    "Target Canasta version" line of `canasta version`, or None if that line
+    cannot be read."""
+    result = run(["canasta", "version"], dry_run=False, capture=True,
+                 check=False)
+    out = (result.stdout or "") + (result.stderr or "")
+    vm = re.search(r"Target Canasta version:\s*(\d+(?:\.\d+){0,2})", out)
+    return vm.group(1) if vm else None
+
+
+def default_canasta_image() -> str:
+    """The base image a web overlay layers on: the Canasta release the
+    installed CLI targets, so a rebuild of one app version lands on the same
+    image every time. Falls back to DEFAULT_CANASTA_IMAGE (:latest) with a
+    warning when the version is unreadable or is not a full X.Y.Z."""
+    try:
+        version = target_canasta_version()
+    except OSError:
+        # canasta is not runnable (for example, not installed): the same
+        # fallback as an unreadable version.
+        version = None
+    if version is None or version.count(".") != 2:
+        warn(f"cannot read a full Canasta version from `canasta version`; "
+             f"the web overlay base falls back to {DEFAULT_CANASTA_IMAGE}")
+        return DEFAULT_CANASTA_IMAGE
+    return f"ghcr.io/canastawiki/canasta:{version}"
+
+
 def check_canasta_requirement(constraint: str, dry_run: bool = False) -> None:
     """Enforce the manifest's requires.canasta constraint (">=X[.Y[.Z]]",
     also >, <=, <, ==) against `canasta version`'s "Target Canasta
@@ -1509,25 +1540,22 @@ def check_canasta_requirement(constraint: str, dry_run: bool = False) -> None:
             f"requires.canasta constraint '{constraint}' is not of the "
             f"form '>=X.Y' (supported: >=, >, <=, <, ==)")
     op, want = m.group(1), m.group(2)
-    result = run(["canasta", "version"], dry_run=False, capture=True,
-                 check=False)
-    out = (result.stdout or "") + (result.stderr or "")
-    vm = re.search(r"Target Canasta version:\s*(\d+(?:\.\d+){0,2})", out)
-    if not vm:
+    version = target_canasta_version()
+    if version is None:
         warn(f"cannot determine the Canasta version from `canasta version` "
              f"output; skipping the requires.canasta ({constraint}) check")
         return
     def pad(v: str) -> str:
         parts = v.split(".")
         return ".".join(parts + ["0"] * (3 - len(parts)))
-    have = semver_triplet(pad(vm.group(1)))
+    have = semver_triplet(pad(version))
     need = semver_triplet(pad(want))
     ok = {"<": have < need, "<=": have <= need, "==": have == need,
           ">": have > need, ">=": have >= need}[op]
     if not ok:
         raise BuildError(
             f"this app requires Canasta {constraint}, but the installed "
-            f"CLI targets Canasta {vm.group(1)} — upgrade the canasta CLI")
+            f"CLI targets Canasta {version} — upgrade the canasta CLI")
 
 
 def require_modules(*modules: str) -> None:

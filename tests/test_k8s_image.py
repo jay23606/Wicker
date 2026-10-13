@@ -374,3 +374,40 @@ class TestUpgradeRestagesBuildFrom:
         u.apply_images({})
         assert "Staging web build context for --build-from" not in capsys.readouterr().out
         assert not u._build_from_root().exists()
+
+
+class TestOverlayBaseFollowsCanastaVersion:
+    """The web overlay layers on the Canasta release the installed CLI targets,
+    not on :latest, so two rebuilds of one app version land on the same image."""
+
+    def _target(self, monkeypatch, line):
+        """Answer `canasta version` with `line`; record every command run."""
+        calls = []
+
+        class R:
+            stdout = f"Canasta CLI 5.0.0 (native)\n{line}\n"
+            stderr = ""
+            returncode = 0
+
+        def fake_run(cmd, **kw):
+            calls.append(list(cmd))
+            return R()
+
+        monkeypatch.setattr(wicker, "run", fake_run)
+        return calls
+
+    def test_overlay_base_follows_the_targeted_canasta_version(
+            self, tmp_path, monkeypatch):
+        calls = self._target(monkeypatch, "Target Canasta version: 3.5.10")
+        m = minimal_manifest(images={"web": {"dockerfile": "./Dockerfile"}})
+        u = make_upgrade(tmp_path, m, id="app", orchestrator="k8s")
+        u.apply_images({})
+        push = next(c for c in calls if c[:3] == ["canasta", "image", "push"])
+        assert "BASE_IMAGE=ghcr.io/canastawiki/canasta:3.5.10" in push
+        assert "BASE_IMAGE=ghcr.io/canastawiki/canasta:latest" not in push
+
+    def test_unreadable_version_falls_back_to_latest_with_a_warning(
+            self, monkeypatch, capsys):
+        self._target(monkeypatch, "no version line here")
+        assert wicker.default_canasta_image() == wicker.DEFAULT_CANASTA_IMAGE
+        assert "WARN" in capsys.readouterr().err
